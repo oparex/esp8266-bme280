@@ -135,26 +135,165 @@ For battery-powered deployments, enable deep sleep by uncommenting in `main.ino`
 - Current consumption drops to ~50 µA during sleep
 - The device wakes up, takes a reading, publishes, then sleeps again
 
+## Mosquitto MQTT Broker Setup
+
+### Installation
+
+**Ubuntu/Debian:**
+```bash
+sudo apt update
+sudo apt install mosquitto mosquitto-clients
+sudo systemctl enable mosquitto
+sudo systemctl start mosquitto
+```
+
+**macOS:**
+```bash
+brew install mosquitto
+brew services start mosquitto
+```
+
+**Docker:**
+```bash
+docker run -d --name mosquitto -p 1883:1883 -p 9001:9001 eclipse-mosquitto
+```
+
+### Configuration
+
+Create/edit `/etc/mosquitto/mosquitto.conf`:
+
+```conf
+# Basic configuration
+listener 1883
+allow_anonymous true
+
+# Persistence
+persistence true
+persistence_location /var/lib/mosquitto/
+
+# Logging
+log_dest file /var/log/mosquitto/mosquitto.log
+log_type all
+```
+
+**For authentication** (recommended for production):
+
+```conf
+listener 1883
+allow_anonymous false
+password_file /etc/mosquitto/passwd
+```
+
+Create a user:
+```bash
+sudo mosquitto_passwd -c /etc/mosquitto/passwd your_username
+```
+
+Restart Mosquitto:
+```bash
+sudo systemctl restart mosquitto
+```
+
+### Testing the Broker
+
+Subscribe to all topics:
+```bash
+mosquitto_sub -h localhost -t '#' -v
+```
+
+Publish a test message:
+```bash
+mosquitto_pub -h localhost -t sensors/test -m "hello"
+```
+
 ## Integration Examples
 
-### Telegraf Configuration
+### Complete Telegraf Configuration
 
 ```toml
+# Input: Subscribe to MQTT topics
 [[inputs.mqtt_consumer]]
   servers = ["tcp://localhost:1883"]
   topics = ["sensors/+/bme280"]
   data_format = "json"
   tag_keys = ["location", "device_id"]
+
+  # Optional: MQTT authentication
+  # username = "mqtt_user"
+  # password = "mqtt_password"
+
+  # Client ID
+  client_id = "telegraf"
+
+  # QoS level
+  qos = 0
 ```
 
-### QuestDB Ingestion
+### QuestDB Output Configuration
 
-Telegraf can forward data to QuestDB for time-series storage:
+Telegraf can forward data to QuestDB using the InfluxDB v2 output:
 
 ```toml
-[[outputs.socket_writer]]
-  address = "tcp://localhost:9009"
-  data_format = "influx"
+[[outputs.influxdb_v2]]
+  # QuestDB InfluxDB line protocol endpoint
+  urls = ["http://localhost:9000"]
+
+  # Authentication token (use any non-empty string for QuestDB)
+  token = "questdb"
+
+  # Organization and bucket (required but ignored by QuestDB)
+  organization = "questdb"
+  bucket = "sensors"
+
+  # Optional: Timeout settings
+  timeout = "5s"
+```
+
+**Complete Telegraf configuration** (`/etc/telegraf/telegraf.conf`):
+
+```toml
+[agent]
+  interval = "10s"
+  round_interval = true
+  metric_batch_size = 1000
+  metric_buffer_limit = 10000
+  flush_interval = "10s"
+
+[[inputs.mqtt_consumer]]
+  servers = ["tcp://localhost:1883"]
+  topics = ["sensors/+/bme280"]
+  data_format = "json"
+  tag_keys = ["location", "device_id"]
+
+[[outputs.influxdb_v2]]
+  urls = ["http://localhost:9000"]
+  token = "questdb"
+  organization = "questdb"
+  bucket = "sensors"
+```
+
+### Verify Data in QuestDB
+
+Connect to QuestDB web console at `http://localhost:9000` and query:
+
+```sql
+SELECT * FROM mqtt_consumer ORDER BY timestamp DESC LIMIT 10;
+```
+
+Or check specific sensor data:
+
+```sql
+SELECT
+  timestamp,
+  temperature,
+  humidity,
+  pressure,
+  location,
+  device_id
+FROM mqtt_consumer
+WHERE location = 'bedroom'
+  AND timestamp > dateadd('h', -1, now())
+ORDER BY timestamp DESC;
 ```
 
 ### Home Assistant
